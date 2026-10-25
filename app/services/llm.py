@@ -20,6 +20,16 @@ async def generate(prompt: str, system: str, temperature: float = 0.2) -> str:
     return result
 
 async def embed(text: str) -> list[float]:
+    """fastembed wrapper for embedding text using the configured model. Returns a list of floats."""
+    from fastembed import TextEmbedding
+    from pathlib import Path
+
+    MODEL = settings.embedding_model or "BAAI/bge-large-en-v1.5"
+    model = TextEmbedding(MODEL, cache_dir=str(Path(__file__).parent / ".models"))
+    vectors = [vector.tolist() for vector in model.passage_embed([text], batch_size=64)]
+    return vectors[0] if vectors else []
+
+async def embed_old(text: str) -> list[float]:
     """Use Ollama's embedding endpoint; set OLLAMA_EMBED_MODEL and dimensions consistently if changed."""
     import os
     model = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")

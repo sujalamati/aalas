@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from app.models import Job, User
 from app.services.llm import embed
 from app.services.jobs_provider import fetch_jobs, normalize_job
+import pypandoc
 
 def provider_options(user: User, limit: int) -> list[dict]:
     # Provider's documented option values can vary. Verify them against your installed package.
@@ -49,7 +50,8 @@ async def fetch_and_store(db: Session, user: User, limit: int = 25) -> int:
     return count
 
 async def rank_jobs(db: Session, user: User, limit: int = 25) -> list[dict]:
-    query_text = f"{user.target_roles}\nPreferred locations: {user.locations}\nJob type: {user.job_type}\nExperience: {user.experience_level}\nAdditional context: {user.additional_context[:1500]}"
+    parsed_resume = pypandoc.convert_text(user.resume_latex, 'plain', format='latex')
+    query_text = f"{user.target_roles}\nPreferred locations: {user.locations}\nJob type: {user.job_type}\nExperience: {user.experience_level}\nResume: {parsed_resume}\nAdditional context: {user.additional_context[:1500]}"
     try:
         query_vector = await embed(query_text)
     except Exception:

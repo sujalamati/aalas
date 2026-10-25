@@ -11,5 +11,6 @@ class Settings(BaseSettings):
     latex_engine: str = "pdflatex"  # tectonic or pdflatex
     generated_dir: str = "generated"
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    embedding_model: str = "BAAI/bge-large-en-v1.5"
 
 settings = Settings()

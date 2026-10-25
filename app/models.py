@@ -4,7 +4,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from pgvector.sqlalchemy import Vector
 from app.db import Base
 
-EMBEDDING_DIM = 768  # Ollama embedding model dimension; configured embedding model must match.
+EMBEDDING_DIM = 1024  # Ollama embedding model dimension; configured embedding model must match.
 
 def utcnow():
     return datetime.now(timezone.utc)

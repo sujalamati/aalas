@@ -1,0 +1,42 @@
+services:
+  db:
+    image: timescale/timescaledb-ha:pg17
+    container_name: hybrid-search
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: password
+      POSTGRES_USER: postgres
+      POSTGRES_DB: postgres
+    command: ["postgres", "-c", "shared_preload_libraries=timescaledb,pg_textsearch"]
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/home/postgres/pgdata/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  api:
+    build: .
+    environment:
+      DATABASE_URL: postgresql+psycopg://postgres:password@db:5432/postgres
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+      OLLAMA_MODEL: gemma4:e4b
+      OLLAMA_EMBED_MODEL: nomic-embed-text
+      SCHEDULER_ENABLED: "false"
+      LATEX_ENGINE: pdflatex
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - generated_docs:/app/generated
+
+volumes:
+  pgdata:
+  generated_docs:

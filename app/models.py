@@ -12,8 +12,8 @@ def utcnow():
 class User(Base):
     __tablename__ = "users"
     id: Mapped[int] = mapped_column(primary_key=True)
-    name: Mapped[str] = mapped_column(String(160))
-    email: Mapped[str] = mapped_column(String(320), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(160), default="Sujal Sunil Amati")
+    email: Mapped[str] = mapped_column(String(320), unique=True, index=True, default="sujal5amati@gmail.com")
     target_roles: Mapped[str] = mapped_column(Text, default="Software Engineer")
     locations: Mapped[str] = mapped_column(Text, default="Bengaluru")
     job_type: Mapped[str] = mapped_column(String(80), default="full time")

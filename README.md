@@ -4,8 +4,8 @@ Backend scaffold for a job discovery tool with PostgreSQL/pgvector hybrid rankin
 
 ## Important integration notes
 
-- `linkedin-jobs-api` is an unofficial third-party scraper-style package, **not an official LinkedIn API**. The code keeps it behind `app/services/jobs_provider.py`. Its example in your prompt is JavaScript (`require(...)`), not a Python API; the Python package may not expose the same interface. Verify its actual Python interface before expecting live fetches. If it only exists as a Node package, run it as a separate Node microservice or replace the adapter with a permitted job-data provider.
-- The example response you supplied does not contain a full job description. Tailoring is much better when the provider supplies the description. This scaffold stores an empty description when none is available and tells the model not to invent facts.
+- `app/services/jobs_provider.py` is a native Python port of the supplied JavaScript implementation. It uses `httpx` and BeautifulSoup; the unrelated `linkedin-jobs-api` Python package has been removed. It requests LinkedIn guest-job listing HTML, so the endpoint and HTML selectors can change and requests may be rate-limited. This is not an official LinkedIn API; verify applicable terms before deployment and keep request rates conservative.
+- Search results do not contain the full description, so the provider makes a second request to each job URL and extracts `description` from the page’s schema.org `JobPosting` JSON-LD. It falls back to common visible-description selectors. A failed detail-page request does not discard the listing; its description remains empty.
 - Check LinkedIn and provider terms, rate limits, privacy obligations, and any applicable API terms before deploying scraping-based ingestion.
 - `gemma4:e4b` is used for both document-generation calls. Embeddings use a separate Ollama model (`nomic-embed-text`) because a chat model is not automatically an embedding model. Its vector size must match `EMBEDDING_DIM` in `app/models.py`; if it differs, update that constant and recreate the `jobs` table.
 - For local testing, generated PDFs are returned as URLs. LaTeX compilation is not a security boundary; run compilation in an isolated container with resource limits before accepting arbitrary user-provided LaTeX in production.
@@ -89,14 +89,45 @@ Create the profile first, for example:
 
 Then call `POST /api/users/{user_id}/resume`, enter the user ID in the path, and choose the `.tex` file in the `file` input. The endpoint accepts files up to 1 MB, requires UTF-8 text, and rejects non-`.tex` filenames. Profile responses report `resume_uploaded: true/false` instead of echoing the entire LaTeX source.
 
+## LinkedIn guest-job provider details
+
+The provider is implemented in pure Python in `app/services/jobs_provider.py`:
+
+- `httpx` requests the guest-job listing endpoint.
+- `beautifulsoup4` parses the same selectors used by the supplied Cheerio implementation and extracts full descriptions from the individual job details pages (JSON-LD first, visible HTML selectors second).
+- The adapter supports the original date, experience, job-type, remote, salary, sort, and page filters.
+- Results are fetched in batches of 25, with a one-hour in-memory cache, bounded retries, exponential backoff, and a pause between successful batches.
+- Job detail pages are fetched with bounded concurrency and an independent one-hour description cache to reduce duplicate requests. The supplied JavaScript dependency `random-useragent` is not needed. The Python version uses a stable User-Agent and does not rotate identities to get around rate limiting.
+
+The listing endpoint contains only card fields. The provider therefore makes a second request to each `jobUrl` and extracts the full description from the page. LinkedIn can change guest endpoints, JSON-LD, or HTML selectors without notice; blocked/failed detail pages leave the description empty rather than breaking the entire search. Avoid high-frequency polling and comply with applicable terms. For durable/production use, consider a licensed job-data API.
+
 ## Hybrid ranking
 
-The query combines PostgreSQL full-text keyword rank (45%) and pgvector cosine similarity (55%). Tune weights after evaluating results. Missing salary is not treated as zero and does not remove a job from search. The response exposes `"Not specified"` for salary when the provider omits it.
+Job relevance uses BM25 keyword retrieval and pgvector cosine-similarity retrieval, fused using Reciprocal Rank Fusion (RRF). Missing salary is not treated as zero and does not remove a job from search. The response exposes `"Not specified"` for salary when the provider omits it. See the BM25/RRF details below.
 
 ## Design choices and next steps
 
 - Per-user unique `(user_id, job_url)` prevents duplicate listings across refreshes.
-- Search refresh currently fetches every target role serially to avoid hammering a provider. Add provider-aware rate limiting/backoff and pagination after confirming provider support.
+- Search refresh currently fetches every target role serially. The provider adapter uses 25-job batches, bounded retries with exponential backoff, a two-to-three-second pause between successful batches, and a one-hour in-memory cache. LinkedIn may rate-limit or alter this guest endpoint, so test conservatively.
 - Scheduler is configured for midnight and noon in `Asia/Kolkata`, but disabled by default in `.env.example` and Docker Compose so tests don't trigger provider calls unexpectedly. Set `SCHEDULER_ENABLED=true` to enable.
 - This scaffold does not yet implement authentication, user data deletion/export, provider retry queues, or a production migration framework. Add authentication and encrypt/restrict resume data before public deployment.
 - In a multi-user production system, run scheduled refreshes in a dedicated worker rather than starting a scheduler in every API replica.
+
+
+## Hybrid ranking: BM25 + vector search + Reciprocal Rank Fusion
+
+The backend creates `jobs_search_text_bm25_idx` during startup. It indexes a concatenation of job title, company, location, and full description with `pg_textsearch` (`text_config='english'`). If the database already exists, restart the API once so `init_db()` creates the index. Confirm with:
+
+```sql
+SELECT indexname, indexdef
+FROM pg_indexes
+WHERE tablename = 'jobs' AND indexname = 'jobs_search_text_bm25_idx';
+```
+
+Search now fetches separate keyword and semantic candidate lists (up to `max(100, limit * 10)` each) and fuses their ranks using Reciprocal Rank Fusion:
+
+`rrf_score = 1 / (60 + keyword_rank) + 1 / (60 + semantic_rank)`
+
+A job appearing in only one candidate list receives the contribution from that list. `pg_textsearch` returns negative BM25 scores, so lower/more-negative scores are better and are sorted ascending before assigning ranks. RRF combines rank positions rather than adding uncalibrated BM25 and cosine-similarity scores. If embedding generation is unavailable, the endpoint falls back to BM25-only ranking. If no lexical matches exist and embeddings are unavailable, recent jobs are returned with score `0`.
+
+The keyword query includes a bounded portion of the resume converted from LaTeX to plain text, role/location preferences, and additional context. `pypandoc-binary` is included so `pypandoc.convert_text(..., format='latex')` is available without a separate system Pandoc install. The BM25 expression index computes corpus statistics over the `jobs` table. The SQL materializes a user's active job subset before scoring to prevent other users' duplicate saved rows from crowding out that user's candidate list; for large production datasets, consider normalizing jobs into one global table with a separate user-job association table.
